@@ -70,6 +70,23 @@ static func compile_graph(graph: GDHPRBlueprintGraph) -> Dictionary:
 				% (called_name if not called_name.is_empty() else "?")
 			)
 
+	# On Signal nodes with a connect target are wired up from _ready.
+	var signal_preamble := PackedStringArray()
+	var has_ready := false
+	for event in events:
+		var event_type := String(event["type"])
+		if event_type == "event_ready":
+			has_ready = true
+		elif event_type == "event_signal":
+			var signal_props: Dictionary = event.get("props", {})
+			var target_text := String(signal_props.get("connect_target", "self")).strip_edges()
+			var signal_name := Identifiers.sanitize(String(signal_props.get("signal_name", "")))
+			if target_text.is_empty() or signal_name.is_empty():
+				continue
+			signal_preamble.append("\t%s.%s.connect(self.%s)" % [
+				_target(target_text), signal_name, _signal_handler_name(signal_name),
+			])
+
 	var emitted_functions := {}
 	for event in events:
 		if String(event["type"]) == "func_define":
@@ -78,7 +95,13 @@ static func compile_graph(graph: GDHPRBlueprintGraph) -> Dictionary:
 			if emitted_functions.has(emit_name):
 				continue
 			emitted_functions[emit_name] = true
-		_emit_event(graph, event, lines, warnings)
+		_emit_event(graph, event, lines, warnings, signal_preamble)
+
+	if not has_ready and not signal_preamble.is_empty():
+		lines.append("func _ready() -> void:")
+		for line in signal_preamble:
+			lines.append(line)
+		lines.append("")
 
 	var code := "\n".join(lines)
 	if not code.ends_with("\n"):
@@ -95,7 +118,8 @@ static func _emit_event(
 	graph: GDHPRBlueprintGraph,
 	event: Dictionary,
 	lines: PackedStringArray,
-	warnings: PackedStringArray
+	warnings: PackedStringArray,
+	preamble: PackedStringArray = PackedStringArray()
 ) -> void:
 	var id := int(event["id"])
 	var type := String(event["type"])
@@ -103,7 +127,12 @@ static func _emit_event(
 	match type:
 		"event_ready":
 			lines.append("func _ready() -> void:")
-			_emit_block(graph, id, 0, lines, 1, warnings, _context(false))
+			var ready_start := lines.size()
+			for line in preamble:
+				lines.append(line)
+			_emit_chain(graph, id, 0, lines, 1, warnings, _context(false))
+			if lines.size() == ready_start:
+				lines.append("\tpass")
 			lines.append("")
 		"event_process":
 			lines.append("func _process(delta: float) -> void:")
@@ -124,12 +153,37 @@ static func _emit_event(
 				warnings.append("Function '%s' collides with a built-in callback." % function_name)
 			var argument_names := PackedStringArray()
 			for i in clampi(int(props.get("arg_count", 0)), 0, 3):
-				argument_names.append(_sanitize_identifier(String(props.get("arg%d" % i, "arg%d" % i))))
-			# Untyped return so a Return node may pass a value or nothing.
-			lines.append("func %s(%s):" % [function_name, ", ".join(argument_names)])
+				var argument_name := _sanitize_identifier(String(props.get("arg%d" % i, "arg%d" % i)))
+				argument_names.append(argument_name + _type_hint(String(props.get("arg%d_type" % i, ""))))
+			var return_type := String(props.get("return_type", "void"))
+			lines.append("func %s(%s)%s:" % [function_name, ", ".join(argument_names), _return_hint(return_type)])
 			var function_context := _context(false)
 			function_context["in_function"] = true
+			function_context["return_type"] = return_type
 			_emit_block(graph, id, 0, lines, 1, warnings, function_context)
+			lines.append("")
+		"signal_declare":
+			var declared_signal := Identifiers.sanitize(String(props.get("signal_name", "")))
+			if declared_signal.is_empty():
+				warnings.append("A Signal node has no name; it was skipped.")
+				return
+			var signal_args := PackedStringArray()
+			for i in clampi(int(props.get("arg_count", 0)), 0, 2):
+				signal_args.append(_sanitize_identifier(String(props.get("arg%d" % i, "arg%d" % i))))
+			lines.append("signal %s(%s)" % [declared_signal, ", ".join(signal_args)])
+			lines.append("")
+		"event_signal":
+			var handled_signal := Identifiers.sanitize(String(props.get("signal_name", "")))
+			if handled_signal.is_empty():
+				warnings.append("An On Signal node has no signal name; it was skipped.")
+				return
+			var handler_args := PackedStringArray()
+			for i in clampi(int(props.get("arg_count", 0)), 0, 2):
+				handler_args.append(_sanitize_identifier(String(props.get("arg%d" % i, "arg%d" % i))))
+			lines.append("func %s(%s):" % [_signal_handler_name(handled_signal), ", ".join(handler_args)])
+			var handler_context := _context(false)
+			handler_context["in_function"] = true
+			_emit_block(graph, id, 0, lines, 1, warnings, handler_context)
 			lines.append("")
 		_:
 			warnings.append("Unknown event type '%s'." % type)
@@ -147,6 +201,22 @@ static func _deeper(context: Dictionary) -> Dictionary:
 	var inner := context.duplicate()
 	inner["loop_depth"] = int(context.get("loop_depth", 0)) + 1
 	return inner
+
+
+static func _type_hint(type_name: String) -> String:
+	if type_name.is_empty() or type_name == "Variant":
+		return ""
+	return ": " + type_name
+
+
+static func _return_hint(type_name: String) -> String:
+	if type_name.is_empty() or type_name == "Variant":
+		return ""
+	return " -> " + type_name
+
+
+static func _signal_handler_name(signal_name: String) -> String:
+	return "_on_" + Identifiers.sanitize(signal_name)
 
 
 static func _function_name(props: Dictionary) -> String:
@@ -272,13 +342,48 @@ static func _emit_node(
 		"func_return":
 			if not bool(context.get("in_function", false)):
 				warnings.append("Return used outside a Function node; generated code will not compile.")
-			if graph.link_into(node_id, 1).is_empty():
-				lines.append(pad + "return")
-			else:
+			var returns_value := not graph.link_into(node_id, 1).is_empty()
+			var declared_return := String(context.get("return_type", ""))
+			if returns_value and declared_return == "void":
+				warnings.append("Return supplies a value but the function's return type is void.")
+			elif not returns_value and declared_return not in ["", "void", "Variant"]:
+				warnings.append("Return has no value but the function declares -> %s." % declared_return)
+			if returns_value:
 				lines.append(pad + "return %s" % _value_or(graph, node_id, 1, "null", warnings, 0))
+			else:
+				lines.append(pad + "return")
 		"call_custom":
 			var function_name := _function_name(props)
 			lines.append(pad + "%s(%s)" % [function_name, _call_arguments(graph, node_id, props, warnings)])
+			_emit_chain(graph, node_id, 0, lines, indent, warnings, context)
+		"for_each":
+			var item_name := _sanitize_identifier(String(props.get("item", "item")))
+			var source := _value_or(graph, node_id, 1, "[]", warnings, 0)
+			lines.append(pad + "for %s in %s:" % [item_name, source])
+			_emit_block(graph, node_id, 0, lines, indent + 1, warnings, _deeper(context))
+			_emit_chain(graph, node_id, 1, lines, indent, warnings, context)
+		"array_add":
+			var array_variable := _sanitize_identifier(String(props.get("variable", "my_array")))
+			lines.append(pad + "%s.append(%s)" % [
+				array_variable, _value_or(graph, node_id, 1, "null", warnings, 0),
+			])
+			_emit_chain(graph, node_id, 0, lines, indent, warnings, context)
+		"emit_signal":
+			var emitted_signal := Identifiers.sanitize(String(props.get("signal_name", "my_signal")))
+			var signal_count := clampi(int(props.get("arg_count", 0)), 0, 2)
+			var signal_values := PackedStringArray()
+			for i in signal_count:
+				signal_values.append(_value_or(graph, node_id, 1 + i, "null", warnings, 0))
+			var suffix := "" if signal_values.is_empty() else ", " + ", ".join(signal_values)
+			lines.append(pad + "emit_signal(\"%s\"%s)" % [emitted_signal, suffix])
+			_emit_chain(graph, node_id, 0, lines, indent, warnings, context)
+		"connect_signal":
+			var connect_target := _target(String(props.get("target", "self")))
+			var connected_signal := Identifiers.sanitize(String(props.get("signal_name", "my_signal")))
+			var connected_method := _sanitize_identifier(String(props.get("method", "_on_my_signal")))
+			lines.append(pad + "%s.%s.connect(%s.%s)" % [
+				connect_target, connected_signal, connect_target, connected_method,
+			])
 			_emit_chain(graph, node_id, 0, lines, indent, warnings, context)
 		_:
 			if GDHPRBlueprintDefs.get_def(type)["category"] == "Value":
@@ -352,6 +457,19 @@ static func _expression(
 			return "(%s %s %s)" % [a, op, b]
 		"call_custom":
 			return "%s(%s)" % [_function_name(props), _call_arguments(graph, node_id, props, warnings)]
+		"make_array":
+			var item_count := clampi(int(props.get("count", 0)), 0, 3)
+			var items := PackedStringArray()
+			for i in item_count:
+				items.append(_value_or(graph, node_id, i, "null", warnings, depth))
+			return "[%s]" % ", ".join(items)
+		"array_size":
+			return "(%s).size()" % _value_or(graph, node_id, 0, "[]", warnings, depth)
+		"array_get":
+			return "(%s)[%s]" % [
+				_value_or(graph, node_id, 0, "[]", warnings, depth),
+				_value_or(graph, node_id, 1, "0", warnings, depth),
+			]
 		_:
 			warnings.append("Node '%s' cannot be used as a value." % type)
 			return ""
@@ -375,6 +493,8 @@ static func _collect_variables(graph: GDHPRBlueprintGraph) -> Dictionary:
 				initial = bool(source.get("props", {}).get("value", true))
 			elif source_type == "const_vector3":
 				initial = source.get("props", {}).get("value", Vector3.ZERO)
+			elif source_type == "make_array":
+				initial = []
 		variables[name] = initial
 	return variables
 
@@ -446,6 +566,16 @@ static func _literal(value: Variant) -> String:
 		TYPE_VECTOR2:
 			var v2: Vector2 = value
 			return "Vector2(%s, %s)" % [str(snappedf(v2.x, 0.000001)), str(snappedf(v2.y, 0.000001))]
+		TYPE_ARRAY:
+			var parts := PackedStringArray()
+			for item in value:
+				parts.append(_literal(item))
+			return "[%s]" % ", ".join(parts)
+		TYPE_DICTIONARY:
+			var entries := PackedStringArray()
+			for key in value:
+				entries.append("%s: %s" % [_literal(key), _literal(value[key])])
+			return "{%s}" % ", ".join(entries)
 		TYPE_NIL:
 			return "null"
 	return "null"

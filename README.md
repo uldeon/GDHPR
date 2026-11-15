@@ -131,10 +131,15 @@ ports into inputs.
 
 | Category | Nodes |
 |---|---|
-| Event | `On Ready`, `On Process`, `On Action Pressed`, `Function` (custom function, up to 3 args) |
-| Flow | `Print`, `Branch (If)`, `Set Variable`, `Call Method`, `Call Function`, `Set Property`, `Wait`, `Return` |
-| Loop | `For Loop` (range From→To, with `After` continuation), `While Loop`, `Break`, `Continue` |
-| Value | `Number`, `Text`, `Boolean`, `Vector3`, `Get Variable`, `Math`, `Compare`, `Random Number`, `Delta`, `Position`, and any `Call Function` node's Value port |
+| Event | `On Ready`, `On Process`, `On Action Pressed`, `Function` (custom function, 3 typed args + return type), `Signal`, `On Signal` |
+| Flow | `Print`, `Branch (If)`, `Set Variable`, `Call Method`, `Call Function`, `Set Property`, `Wait`, `Return`, `Emit Signal`, `Connect Signal`, `Array Add` |
+| Loop | `For Loop` (range From→To), `For Each` (over an array), `While Loop`, each with an `After` continuation, plus `Break` / `Continue` |
+| Value | `Number`, `Text`, `Boolean`, `Vector3`, `Array` (literal), `Array Size`, `Array Get`, `Get Variable`, `Math`, `Compare`, `Random Number`, `Delta`, `Position`, and any `Call Function` node's Value port |
+
+Function arguments and return values are typed (`func total(xs: Array, scale: float) -> int:`).
+`On Signal` generates `_on_<signal>(...)` and, when its connect target is not
+empty, wires itself up from `_ready` (merged into an existing `On Ready` body if
+there is one). `Connect Signal` covers the explicit case.
 
 Graphs save as `.tres` (`GDHPRBlueprintGraph`) and **Generate GDScript** emits
 plain GDScript that has **no GDHPR dependency**:
@@ -167,13 +172,15 @@ func _process(delta: float) -> void:
 
 The compiler reports problems instead of silently producing broken code:
 undefined `Call Function` targets, duplicate function names, `Return` outside a
-function, `Break`/`Continue` outside a loop, unused `Delta` outside `On Process`.
-Duplicate definitions are skipped so the output still parses. It is a one-file
-compiler (`blueprint/gdhpr_blueprint_compiler.gd`), so new node types are a
-definition entry plus a case.
+function or returning a value from a `void` function, `Break`/`Continue` outside
+a loop, unused `Delta` outside `On Process`. Duplicate definitions are skipped so
+the output still parses. It is a one-file compiler
+(`blueprint/gdhpr_blueprint_compiler.gd`), so new node types are a definition
+entry plus a case.
 
-Not there yet: typed function arguments, arrays/`for each`, and custom signals.
-The generated code is plain GDScript, so it can be extended by hand afterwards.
+Not there yet: typed script variables (variables stay `Variant`), untyped signal
+arguments, dictionary nodes, and `match`/switch. The generated code is plain
+GDScript, so it can be extended by hand afterwards.
 
 ## API at a glance
 
@@ -215,10 +222,12 @@ Checked with the real engine (Godot 4.7.2 headless, in this repository):
   `GDHPRWorld`, `GDHPRLightManager`, `GDHPR.setup()` and the blueprint editor all
   instantiate and run.
 - Blueprint compiler output was written to disk, parsed by Godot, instantiated
-  and executed (branches, variables, method calls, wait, value nodes, `for`/`while`
-  loops, custom functions with arguments, return values and function calls used
-  as expressions), including the warning paths (duplicate function, undefined
-  call).
+  and executed: branches, variables, method calls, wait, value nodes,
+  `for`/`while`/`for each` loops, custom functions with typed arguments and
+  return types, function calls used as expressions, array literals/`append`/index
+  access, and custom signals (declaration, auto-connected `On Signal` handler,
+  `emit_signal` actually firing it). Warning paths checked too: duplicate
+  function, undefined call, value returned from a `void` function.
 
 Not verified here: visual appearance on a GPU (this environment is headless), and
 the dock's interactive behaviour beyond instantiating cleanly.

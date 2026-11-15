@@ -14,6 +14,18 @@ const EXEC_COLOR := Color(0.95, 0.55, 0.30)
 ## Ordered list of categories for the "Add node" menu.
 const CATEGORIES := ["Event", "Flow", "Value"]
 
+## Types offered for function arguments and signal arguments.
+const ARGUMENT_TYPES := [
+	"Variant", "int", "float", "bool", "String", "Vector2", "Vector3", "Color",
+	"Array", "Dictionary", "NodePath", "Object", "Node", "Node3D",
+]
+
+## Types offered for a function's return value.
+const RETURN_TYPES := [
+	"void", "Variant", "int", "float", "bool", "String", "Vector2", "Vector3", "Color",
+	"Array", "Dictionary", "NodePath", "Object", "Node", "Node3D",
+]
+
 const NODES := {
 	# --- Events -------------------------------------------------------------
 	"event_ready": {
@@ -50,8 +62,39 @@ const NODES := {
 			{"name": "function", "type": "String", "default": "my_function"},
 			{"name": "arg_count", "type": "int", "default": 0, "max": 3},
 			{"name": "arg0", "type": "String", "default": "a"},
+			{"name": "arg0_type", "type": "enum", "options": ARGUMENT_TYPES, "default": "Variant"},
 			{"name": "arg1", "type": "String", "default": "b"},
+			{"name": "arg1_type", "type": "enum", "options": ARGUMENT_TYPES, "default": "Variant"},
 			{"name": "arg2", "type": "String", "default": "c"},
+			{"name": "arg2_type", "type": "enum", "options": ARGUMENT_TYPES, "default": "Variant"},
+			{"name": "return_type", "type": "enum", "options": RETURN_TYPES, "default": "void"},
+		],
+	},
+	"signal_declare": {
+		"title": "Signal",
+		"category": "Event",
+		"desc": "Declares a custom signal.",
+		"inputs": [],
+		"outputs": [],
+		"params": [
+			{"name": "signal_name", "type": "String", "default": "my_signal"},
+			{"name": "arg_count", "type": "int", "default": 0, "max": 2},
+			{"name": "arg0", "type": "String", "default": "value"},
+			{"name": "arg1", "type": "String", "default": "amount"},
+		],
+	},
+	"event_signal": {
+		"title": "On Signal",
+		"category": "Event",
+		"desc": "Handler for a signal. Connect target 'self' wires it up automatically; empty disables wiring.",
+		"inputs": [],
+		"outputs": [{"name": "Then", "kind": "flow"}],
+		"params": [
+			{"name": "signal_name", "type": "String", "default": "my_signal"},
+			{"name": "connect_target", "type": "String", "default": "self"},
+			{"name": "arg_count", "type": "int", "default": 0, "max": 2},
+			{"name": "arg0", "type": "String", "default": "value"},
+			{"name": "arg1", "type": "String", "default": "amount"},
 		],
 	},
 
@@ -133,6 +176,49 @@ const NODES := {
 			{"name": "variable", "type": "String", "default": "i"},
 			{"name": "from", "type": "float", "default": 0.0},
 			{"name": "to", "type": "float", "default": 10.0},
+		],
+	},
+	"for_each": {
+		"title": "For Each",
+		"category": "Flow",
+		"desc": "Runs Body once per item in an array, then continues from After.",
+		"inputs": [{"name": "Then", "kind": "flow"}, {"name": "Array", "kind": "value"}],
+		"outputs": [{"name": "Body", "kind": "flow"}, {"name": "After", "kind": "flow"}],
+		"params": [{"name": "item", "type": "String", "default": "item"}],
+	},
+	"array_add": {
+		"title": "Array Add",
+		"category": "Flow",
+		"desc": "Appends a value to an array variable.",
+		"inputs": [{"name": "Then", "kind": "flow"}, {"name": "Value", "kind": "value"}],
+		"outputs": [{"name": "Then", "kind": "flow"}],
+		"params": [{"name": "variable", "type": "String", "default": "my_array"}],
+	},
+	"emit_signal": {
+		"title": "Emit Signal",
+		"category": "Flow",
+		"desc": "Fires a signal declared with a Signal node.",
+		"inputs": [
+			{"name": "Then", "kind": "flow"},
+			{"name": "Arg 0", "kind": "value"},
+			{"name": "Arg 1", "kind": "value"},
+		],
+		"outputs": [{"name": "Then", "kind": "flow"}],
+		"params": [
+			{"name": "signal_name", "type": "String", "default": "my_signal"},
+			{"name": "arg_count", "type": "int", "default": 0, "max": 2},
+		],
+	},
+	"connect_signal": {
+		"title": "Connect Signal",
+		"category": "Flow",
+		"desc": "Connects signal 'signal_name' on target to method.",
+		"inputs": [{"name": "Then", "kind": "flow"}],
+		"outputs": [{"name": "Then", "kind": "flow"}],
+		"params": [
+			{"name": "target", "type": "String", "default": "self"},
+			{"name": "signal_name", "type": "String", "default": "my_signal"},
+			{"name": "method", "type": "String", "default": "_on_my_signal"},
 		],
 	},
 	"while_loop": {
@@ -259,6 +345,34 @@ const NODES := {
 			{"name": "min", "type": "float", "default": 0.0},
 			{"name": "max", "type": "float", "default": 1.0},
 		],
+	},
+	"make_array": {
+		"title": "Array",
+		"category": "Value",
+		"desc": "Builds an array literal from up to three values.",
+		"inputs": [
+			{"name": "A", "kind": "value"},
+			{"name": "B", "kind": "value"},
+			{"name": "C", "kind": "value"},
+		],
+		"outputs": [{"name": "Value", "kind": "value"}],
+		"params": [{"name": "count", "type": "int", "default": 2, "max": 3}],
+	},
+	"array_size": {
+		"title": "Array Size",
+		"category": "Value",
+		"desc": "Number of items in an array.",
+		"inputs": [{"name": "Array", "kind": "value"}],
+		"outputs": [{"name": "Value", "kind": "value"}],
+		"params": [],
+	},
+	"array_get": {
+		"title": "Array Get",
+		"category": "Value",
+		"desc": "Item at an index of an array.",
+		"inputs": [{"name": "Array", "kind": "value"}, {"name": "Index", "kind": "value"}],
+		"outputs": [{"name": "Value", "kind": "value"}],
+		"params": [],
 	},
 	"get_delta": {
 		"title": "Delta",
