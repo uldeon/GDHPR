@@ -131,15 +131,22 @@ ports into inputs.
 
 | Category | Nodes |
 |---|---|
-| Event | `On Ready`, `On Process`, `On Action Pressed`, `Function` (custom function, 3 typed args + return type), `Signal`, `On Signal` |
-| Flow | `Print`, `Branch (If)`, `Set Variable`, `Call Method`, `Call Function`, `Set Property`, `Wait`, `Return`, `Emit Signal`, `Connect Signal`, `Array Add` |
+| Event | `On Ready`, `On Process`, `On Action Pressed`, `Function` (custom function, 3 typed args + return type), `Signal` (typed args), `On Signal` (typed args) |
+| Flow | `Print`, `Branch (If)`, `Set Variable` (typed, optional `@export`), `Call Method`, `Call Function`, `Set Property`, `Wait`, `Wait For Signal`, `Return`, `Emit Signal`, `Connect Signal`, `Array Add`, `Dictionary Set`, `Match` |
 | Loop | `For Loop` (range From→To), `For Each` (over an array), `While Loop`, each with an `After` continuation, plus `Break` / `Continue` |
-| Value | `Number`, `Text`, `Boolean`, `Vector3`, `Array` (literal), `Array Size`, `Array Get`, `Get Variable`, `Math`, `Compare`, `Random Number`, `Delta`, `Position`, and any `Call Function` node's Value port |
+| Value | `Number`, `Text`, `Boolean`, `Vector3`, `Array` (literal), `Array Size`, `Array Get`, `Dictionary Get`, `Dictionary Has`, `Convert`, `Get Variable`, `Math`, `Compare`, `Random Number`, `Delta`, `Position`, and any `Call Function` node's Value port |
 
-Function arguments and return values are typed (`func total(xs: Array, scale: float) -> int:`).
+Function arguments, signal arguments, return values and variables are typed
+(`func total(xs: Array, scale: float) -> int:`, `signal hit(target: Node3D, damage: float)`,
+`@export var score: float = 12.5`) — set `type` on a `Set Variable` node and tick
+`export` to expose it in the Inspector. Set Variable nodes also declare arrays
+and dictionaries used by `Array Add` / `Dictionary Set`; the compiler infers those
+declarations, so a graph never emits an undeclared identifier.
 `On Signal` generates `_on_<signal>(...)` and, when its connect target is not
 empty, wires itself up from `_ready` (merged into an existing `On Ready` body if
-there is one). `Connect Signal` covers the explicit case.
+there is one). `Connect Signal` covers the explicit case. `Match` compares with
+GDScript's type-strict equality, so feed it values of the same type as the cases
+(an `int` 3 does not match a `float` 3.0).
 
 Graphs save as `.tres` (`GDHPRBlueprintGraph`) and **Generate GDScript** emits
 plain GDScript that has **no GDHPR dependency**:
@@ -171,16 +178,24 @@ func _process(delta: float) -> void:
 ```
 
 The compiler reports problems instead of silently producing broken code:
-undefined `Call Function` targets, duplicate function names, `Return` outside a
-function or returning a value from a `void` function, `Break`/`Continue` outside
-a loop, unused `Delta` outside `On Process`. Duplicate definitions are skipped so
-the output still parses. It is a one-file compiler
+undefined `Call Function` targets, `Get Variable` names nothing declares,
+duplicate function names, variables redeclared with a different type, `Return`
+outside a function or returning a value from a `void` function, `Break`/`Continue`
+outside a loop, unused `Delta` outside `On Process`, and `Match` chains left on a
+case that is not enabled. Duplicate definitions are skipped so the output still
+parses. It is a one-file compiler
 (`blueprint/gdhpr_blueprint_compiler.gd`), so new node types are a definition
 entry plus a case.
 
-Not there yet: typed script variables (variables stay `Variant`), untyped signal
-arguments, dictionary nodes, and `match`/switch. The generated code is plain
-GDScript, so it can be extended by hand afterwards.
+The editor keeps 64 undo steps: **Ctrl+Z**, **Ctrl+Shift+Z** / **Ctrl+Y**, plus
+Undo/Redo buttons in the toolbar. Adding, deleting, moving, connecting and
+editing node parameters are all undoable, and so is assigning a material from
+the Materials tab.
+
+Not there yet: function-local variables (loop variables are local, everything
+else lives on the script), enums/constants, reusable subgraphs, and the native C
+hot path for mesh work. The generated code is plain GDScript, so it can be
+extended by hand afterwards.
 
 ## API at a glance
 
@@ -228,6 +243,11 @@ Checked with the real engine (Godot 4.7.2 headless, in this repository):
   access, and custom signals (declaration, auto-connected `On Signal` handler,
   `emit_signal` actually firing it). Warning paths checked too: duplicate
   function, undefined call, value returned from a `void` function.
+- Latest node set: a graph using `For Each` + `Array Add`, `Dictionary Set` /
+  `Get` / `Has`, `Convert`, `Match` and typed `@export` variables compiled,
+  parsed and ran (`results = [1.0, 2.0, 3.0]`, `tally = { "count": 3 }`,
+  exported `score`/`label` present in the Inspector), all **41** node types built
+  in the GraphEdit UI, and undo/redo restored a node edit.
 
 Not verified here: visual appearance on a GPU (this environment is headless), and
 the dock's interactive behaviour beyond instantiating cleanly.

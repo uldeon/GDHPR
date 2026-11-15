@@ -20,6 +20,14 @@ var _add_menu: PopupMenu
 var _save_dialog: FileDialog
 var _load_dialog: FileDialog
 var _ui_built := false
+var _undo_stack: Array[String] = []
+var _redo_stack: Array[String] = []
+var _undo_button: Button
+var _redo_button: Button
+var _last_snapshot_ms := 0
+
+const MAX_UNDO := 64
+const EDIT_UNDO_THROTTLE_MS := 400
 
 
 func _ready() -> void:
@@ -39,7 +47,10 @@ func _ensure_ui() -> void:
 func set_graph(new_graph: GDHPRBlueprintGraph) -> void:
 	_ensure_ui()
 	graph = new_graph if new_graph != null else GDHPRBlueprintGraph.new()
+	_undo_stack.clear()
+	_redo_stack.clear()
 	_rebuild()
+	_update_undo_buttons()
 	_set_status("Editing '%s' (%d nodes)" % [graph.graph_name, graph.nodes.size()])
 	graph_changed.emit()
 
@@ -81,6 +92,20 @@ func _build_ui() -> void:
 	load_button.text = "Load"
 	load_button.pressed.connect(_on_load)
 	toolbar.add_child(load_button)
+
+	_undo_button = Button.new()
+	_undo_button.text = "Undo"
+	_undo_button.disabled = true
+	_undo_button.tooltip_text = "Ctrl+Z"
+	_undo_button.pressed.connect(undo)
+	toolbar.add_child(_undo_button)
+
+	_redo_button = Button.new()
+	_redo_button.text = "Redo"
+	_redo_button.disabled = true
+	_redo_button.tooltip_text = "Ctrl+Shift+Z"
+	_redo_button.pressed.connect(redo)
+	toolbar.add_child(_redo_button)
 
 	var generate := Button.new()
 	generate.text = "Generate GDScript"
@@ -166,14 +191,92 @@ func _add_visual_node(data: Dictionary) -> void:
 	visual.name = str(id)
 	_graph_edit.add_child(visual)
 	visual.setup(id, String(data["type"]), graph)
+	visual.edit_hook = func() -> void: _push_undo(true)
 	visual.edited.connect(func() -> void: graph_changed.emit())
 	_nodes_by_id[id] = visual
+
+
+# --- Undo / redo ------------------------------------------------------------
+
+func _snapshot() -> String:
+	return var_to_str({
+		"nodes": graph.nodes.duplicate(true),
+		"connections": graph.connections.duplicate(true),
+	})
+
+
+## Records the current graph state. [param throttled] merges rapid edits (typing
+## in a field) into one undo step.
+func _push_undo(throttled := false) -> void:
+	if graph == null:
+		return
+	var now := Time.get_ticks_msec()
+	if throttled and now - _last_snapshot_ms < EDIT_UNDO_THROTTLE_MS:
+		return
+	_last_snapshot_ms = now
+	_undo_stack.append(_snapshot())
+	while _undo_stack.size() > MAX_UNDO:
+		_undo_stack.remove_at(0)
+	_redo_stack.clear()
+	_update_undo_buttons()
+
+
+func undo() -> void:
+	if _undo_stack.is_empty():
+		return
+	_redo_stack.append(_snapshot())
+	_restore(_undo_stack.pop_back())
+	_set_status("Undo")
+
+
+func redo() -> void:
+	if _redo_stack.is_empty():
+		return
+	_undo_stack.append(_snapshot())
+	_restore(_redo_stack.pop_back())
+	_set_status("Redo")
+
+
+func _restore(snapshot: String) -> void:
+	var data = str_to_var(snapshot)
+	if not data is Dictionary:
+		return
+	graph.nodes = (data.get("nodes", []) as Array).duplicate(true)
+	graph.connections = (data.get("connections", []) as Array).duplicate(true)
+	_rebuild()
+	_update_undo_buttons()
+	graph_changed.emit()
+
+
+func _update_undo_buttons() -> void:
+	if _undo_button != null:
+		_undo_button.disabled = _undo_stack.is_empty()
+	if _redo_button != null:
+		_redo_button.disabled = _redo_stack.is_empty()
+
+
+func _shortcut_input(event: InputEvent) -> void:
+	if not event is InputEventKey or not event.pressed or event.echo:
+		return
+	var key := event as InputEventKey
+	if not key.ctrl_pressed:
+		return
+	if key.keycode == KEY_Z:
+		if key.shift_pressed:
+			redo()
+		else:
+			undo()
+		accept_event()
+	elif key.keycode == KEY_Y:
+		redo()
+		accept_event()
 
 
 func _on_add_menu_id(id: int) -> void:
 	var index := _add_menu.get_item_index(id)
 	var type := String(_add_menu.get_item_metadata(index))
 	var center := _graph_edit.scroll_offset + _graph_edit.size * 0.5
+	_push_undo()
 	var node_id := graph.add_node(type, center)
 	_add_visual_node(graph.node_data(node_id))
 	_set_status("Added %s" % GDHPRBlueprintDefs.get_def(type)["title"])
@@ -192,18 +295,23 @@ func _on_connection_request(from_node: StringName, from_port: int, to_node: Stri
 	if from_kind.is_empty() or to_kind.is_empty() or from_kind != to_kind:
 		_set_status("Cannot connect %s to %s." % [from_kind, to_kind])
 		return
+	_push_undo()
 	graph.connect_ports(from_id, from_port, to_id, to_port)
 	_graph_edit.connect_node(from_node, from_port, to_node, to_port)
 	graph_changed.emit()
 
 
 func _on_disconnection_request(from_node: StringName, from_port: int, to_node: StringName, to_port: int) -> void:
+	_push_undo()
 	graph.disconnect_ports(int(from_node), from_port, int(to_node), to_port)
 	_graph_edit.disconnect_node(from_node, from_port, to_node, to_port)
 	graph_changed.emit()
 
 
 func _on_delete_nodes(nodes: Array[StringName]) -> void:
+	if nodes.is_empty():
+		return
+	_push_undo()
 	for node_name in nodes:
 		var id := int(node_name)
 		graph.remove_node(id)

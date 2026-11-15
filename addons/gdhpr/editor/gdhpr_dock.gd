@@ -413,8 +413,30 @@ func assign_to_scene() -> void:
 	if preset_name.is_empty():
 		_set_status("Pick a material first.")
 		return
-	GDHPRMaterialLibrary.override_meshes(root, preset_name)
-	_set_status("Assigned '%s' to the whole scene." % preset_name)
+	var meshes := _all_meshes(root)
+	if meshes.is_empty():
+		_set_status("No visible meshes in this scene.")
+		return
+	var material := GDHPRMaterialLibrary.preset(preset_name)
+	var undo = editor_plugin.get_undo_redo()
+	undo.create_action("GDHPR: Assign Material to Scene")
+	for mesh in meshes:
+		undo.add_do_property(mesh, "material_override", material)
+		undo.add_undo_property(mesh, "material_override", mesh.material_override)
+	undo.commit_action()
+	_set_status("Assigned '%s' to %d meshes." % [preset_name, meshes.size()])
+
+
+func _all_meshes(root: Node) -> Array[MeshInstance3D]:
+	var out: Array[MeshInstance3D] = []
+	var stack: Array[Node] = [root]
+	while not stack.is_empty():
+		var node: Node = stack.pop_back()
+		if node is MeshInstance3D and (node as MeshInstance3D).visible:
+			out.append(node as MeshInstance3D)
+		for child in node.get_children():
+			stack.append(child)
+	return out
 
 
 func _selected_material() -> String:

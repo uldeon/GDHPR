@@ -33,9 +33,15 @@ static func compile_graph(graph: GDHPRBlueprintGraph) -> Dictionary:
 	lines.append("extends %s" % (graph.base_class if not graph.base_class.is_empty() else "Node3D"))
 	lines.append("")
 
-	var variables := _collect_variables(graph)
+	var variables := _collect_variables(graph, warnings)
 	for var_name in variables:
-		lines.append("var %s = %s" % [var_name, _literal(variables[var_name])])
+		var declaration: Dictionary = variables[var_name]
+		lines.append("%s %s%s = %s" % [
+			"@export var" if bool(declaration.get("export", false)) else "var",
+			var_name,
+			_type_hint(String(declaration.get("type", ""))),
+			_literal(declaration.get("initial")),
+		])
 	if not variables.is_empty():
 		lines.append("")
 
@@ -169,7 +175,8 @@ static func _emit_event(
 				return
 			var signal_args := PackedStringArray()
 			for i in clampi(int(props.get("arg_count", 0)), 0, 2):
-				signal_args.append(_sanitize_identifier(String(props.get("arg%d" % i, "arg%d" % i))))
+				var signal_arg := _sanitize_identifier(String(props.get("arg%d" % i, "arg%d" % i)))
+				signal_args.append(signal_arg + _type_hint(String(props.get("arg%d_type" % i, ""))))
 			lines.append("signal %s(%s)" % [declared_signal, ", ".join(signal_args)])
 			lines.append("")
 		"event_signal":
@@ -179,7 +186,8 @@ static func _emit_event(
 				return
 			var handler_args := PackedStringArray()
 			for i in clampi(int(props.get("arg_count", 0)), 0, 2):
-				handler_args.append(_sanitize_identifier(String(props.get("arg%d" % i, "arg%d" % i))))
+				var handler_arg := _sanitize_identifier(String(props.get("arg%d" % i, "arg%d" % i)))
+				handler_args.append(handler_arg + _type_hint(String(props.get("arg%d_type" % i, ""))))
 			lines.append("func %s(%s):" % [_signal_handler_name(handled_signal), ", ".join(handler_args)])
 			var handler_context := _context(false)
 			handler_context["in_function"] = true
@@ -295,7 +303,11 @@ static func _emit_node(
 				_emit_block(graph, node_id, 1, lines, indent + 1, warnings, context)
 		"set_var":
 			var var_name := _sanitize_identifier(String(props.get("variable", "my_value")))
-			var value := _value_or(graph, node_id, 1, _literal(props.get("value", 0.0)), warnings, 0)
+			var fallback_value: Variant = props.get("value", 0.0)
+			if graph.link_into(node_id, 1).is_empty():
+				# Keep the assignment valid for the declared type.
+				fallback_value = _default_for_type(String(props.get("type", "Variant")), fallback_value)
+			var value := _value_or(graph, node_id, 1, _literal(fallback_value), warnings, 0)
 			lines.append(pad + "%s = %s" % [var_name, value])
 			_emit_chain(graph, node_id, 0, lines, indent, warnings, context)
 		"call_method":
@@ -385,6 +397,44 @@ static func _emit_node(
 				connect_target, connected_signal, connect_target, connected_method,
 			])
 			_emit_chain(graph, node_id, 0, lines, indent, warnings, context)
+		"dict_set":
+			var dict_variable := _sanitize_identifier(String(props.get("variable", "my_dict")))
+			var dict_key := _value_or(graph, node_id, 1, "\"key\"", warnings, 0)
+			var dict_value := _value_or(graph, node_id, 2, "null", warnings, 0)
+			lines.append(pad + "%s[%s] = %s" % [dict_variable, dict_key, dict_value])
+			_emit_chain(graph, node_id, 0, lines, indent, warnings, context)
+		"wait_signal":
+			var awaited_target := _target(String(props.get("target", "self")))
+			var awaited_signal := Identifiers.sanitize(String(props.get("signal_name", "my_signal")))
+			lines.append(pad + "await %s.%s" % [awaited_target, awaited_signal])
+			_emit_chain(graph, node_id, 0, lines, indent, warnings, context)
+		"match_node":
+			var match_value := _value_or(graph, node_id, 1, "null", warnings, 0)
+			var case_count := clampi(int(props.get("case_count", 0)), 0, 3)
+			lines.append(pad + "match %s:" % match_value)
+			var emitted_case := false
+			for i in case_count:
+				if graph.links_from(node_id, i).is_empty():
+					continue
+				var case_value := _value_or(
+					graph, node_id, 2 + i, _literal(props.get("case%d" % i, 0.0)), warnings, 0
+				)
+				lines.append(pad + "\t%s:" % case_value)
+				_emit_block(graph, node_id, i, lines, indent + 2, warnings, context)
+				emitted_case = true
+			if not graph.links_from(node_id, 3).is_empty():
+				lines.append(pad + "\t_:")
+				_emit_block(graph, node_id, 3, lines, indent + 2, warnings, context)
+				emitted_case = true
+			if not emitted_case:
+				lines.append(pad + "\t_:")
+				lines.append(pad + "\t\tpass")
+			for i in range(case_count, 3):
+				if not graph.links_from(node_id, i).is_empty():
+					warnings.append(
+						"Match case %d has a chain but only %d case(s) are enabled; that chain is skipped."
+						% [i + 1, case_count]
+					)
 		_:
 			if GDHPRBlueprintDefs.get_def(type)["category"] == "Value":
 				warnings.append("A value node (%s) is connected as a flow node; ignored." % type)
@@ -470,12 +520,67 @@ static func _expression(
 				_value_or(graph, node_id, 0, "[]", warnings, depth),
 				_value_or(graph, node_id, 1, "0", warnings, depth),
 			]
+		"dict_get":
+			return "(%s)[%s]" % [
+				_value_or(graph, node_id, 0, "{}", warnings, depth),
+				_value_or(graph, node_id, 1, "\"key\"", warnings, depth),
+			]
+		"dict_has":
+			return "(%s).has(%s)" % [
+				_value_or(graph, node_id, 0, "{}", warnings, depth),
+				_value_or(graph, node_id, 1, "\"key\"", warnings, depth),
+			]
+		"convert":
+			var converted := _value_or(graph, node_id, 0, "null", warnings, depth)
+			match String(props.get("to", "String")):
+				"int":
+					return "int(%s)" % converted
+				"float":
+					return "float(%s)" % converted
+				"bool":
+					return "bool(%s)" % converted
+				_:
+					return "str(%s)" % converted
 		_:
 			warnings.append("Node '%s' cannot be used as a value." % type)
 			return ""
 
 
-static func _collect_variables(graph: GDHPRBlueprintGraph) -> Dictionary:
+## Initial value that is valid for a declared variable type. Without this a
+## Dictionary variable would start as 0.0 and the script would not compile.
+static func _default_for_type(type_name: String, fallback: Variant) -> Variant:
+	match type_name:
+		"Array":
+			return [] if not fallback is Array else fallback
+		"Dictionary":
+			return {} if not fallback is Dictionary else fallback
+		"int":
+			return int(fallback) if typeof(fallback) in [TYPE_INT, TYPE_FLOAT, TYPE_BOOL] else 0
+		"float":
+			return float(fallback) if typeof(fallback) in [TYPE_INT, TYPE_FLOAT, TYPE_BOOL] else 0.0
+		"bool":
+			return bool(fallback) if typeof(fallback) in [TYPE_BOOL, TYPE_INT, TYPE_FLOAT] else false
+		"String":
+			return String(fallback) if fallback is String else ""
+		"Vector2":
+			return fallback if fallback is Vector2 else Vector2.ZERO
+		"Vector3":
+			return fallback if fallback is Vector3 else Vector3.ZERO
+		"Color":
+			return fallback if fallback is Color else Color.WHITE
+		"NodePath":
+			return fallback if fallback is NodePath else NodePath("")
+		"Object", "Node", "Node3D":
+			return null
+	return fallback
+
+
+## Collects every variable declared by Set Variable nodes:
+## [code]{name: {"initial": Variant, "type": String, "export": bool}}[/code].
+static func _collect_variables(
+	graph: GDHPRBlueprintGraph,
+	warnings: PackedStringArray = PackedStringArray()
+) -> Dictionary:
 	var variables := {}
 	for node in graph.nodes:
 		if String(node["type"]) != "set_var":
@@ -483,8 +588,11 @@ static func _collect_variables(graph: GDHPRBlueprintGraph) -> Dictionary:
 		var props: Dictionary = node.get("props", {})
 		var name := _sanitize_identifier(String(props.get("variable", "my_value")))
 		var initial: Variant = props.get("value", 0.0)
+		var declared_type := String(props.get("type", "Variant"))
 		var link := graph.link_into(int(node["id"]), 1)
-		if not link.is_empty():
+		if link.is_empty():
+			initial = _default_for_type(declared_type, initial)
+		else:
 			var source := graph.node_data(int(link["from_node"]))
 			var source_type := String(source.get("type", ""))
 			if source_type == "const_string":
@@ -495,7 +603,66 @@ static func _collect_variables(graph: GDHPRBlueprintGraph) -> Dictionary:
 				initial = source.get("props", {}).get("value", Vector3.ZERO)
 			elif source_type == "make_array":
 				initial = []
-		variables[name] = initial
+			elif source_type in ["dict_set", "dict_get", "dict_has"]:
+				initial = {}
+		if variables.has(name):
+			var previous: Dictionary = variables[name]
+			if String(previous.get("type", "")) != declared_type:
+				warnings.append(
+					"Variable '%s' is declared with two different types (%s, %s)."
+					% [name, previous.get("type", "Variant"), declared_type]
+				)
+			if bool(previous.get("export", false)) != bool(props.get("export", false)):
+				warnings.append("Variable '%s' is declared both exported and not exported." % name)
+			continue
+		variables[name] = {
+			"initial": initial,
+			"type": declared_type,
+			"export": bool(props.get("export", false)),
+	}
+	# Loop variables are locals created by the loop itself, so they are not
+	# declared at class scope.
+	var loop_names := {}
+	for node in graph.nodes:
+		var loop_type := String(node.get("type", ""))
+		if loop_type == "for_each":
+			loop_names[_sanitize_identifier(String(node.get("props", {}).get("item", "item")))] = true
+		elif loop_type == "for_range":
+			loop_names[_sanitize_identifier(String(node.get("props", {}).get("variable", "i")))] = true
+	# Arrays and dictionaries touched by their nodes still need a declaration.
+	for node in graph.nodes:
+		var node_type := String(node.get("type", ""))
+		var node_props: Dictionary = node.get("props", {})
+		var inferred_type := ""
+		match node_type:
+			"array_add":
+				inferred_type = "Array"
+			"dict_set":
+				inferred_type = "Dictionary"
+		if inferred_type.is_empty():
+			continue
+		var raw_name := String(node_props.get("variable", "")).strip_edges()
+		if raw_name.is_empty():
+			continue
+		var implicit_name := _sanitize_identifier(raw_name)
+		if implicit_name.is_empty() or variables.has(implicit_name) or loop_names.has(implicit_name):
+			continue
+		variables[implicit_name] = {
+			"initial": _default_for_type(inferred_type, null),
+			"type": inferred_type,
+			"export": false,
+		}
+	# Reading a name nothing declares produces a script that cannot compile.
+	for node in graph.nodes:
+		if String(node.get("type", "")) != "get_var":
+			continue
+		var read_name := _sanitize_identifier(String(node.get("props", {}).get("variable", "")))
+		if read_name.is_empty() or variables.has(read_name) or loop_names.has(read_name):
+			continue
+		warnings.append(
+			"Get Variable '%s' is not declared by a Set Variable node; the generated code will not compile."
+			% read_name
+		)
 	return variables
 
 

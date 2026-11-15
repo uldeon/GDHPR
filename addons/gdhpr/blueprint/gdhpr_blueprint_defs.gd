@@ -80,7 +80,9 @@ const NODES := {
 			{"name": "signal_name", "type": "String", "default": "my_signal"},
 			{"name": "arg_count", "type": "int", "default": 0, "max": 2},
 			{"name": "arg0", "type": "String", "default": "value"},
+			{"name": "arg0_type", "type": "enum", "options": ARGUMENT_TYPES, "default": "Variant"},
 			{"name": "arg1", "type": "String", "default": "amount"},
+			{"name": "arg1_type", "type": "enum", "options": ARGUMENT_TYPES, "default": "Variant"},
 		],
 	},
 	"event_signal": {
@@ -94,7 +96,9 @@ const NODES := {
 			{"name": "connect_target", "type": "String", "default": "self"},
 			{"name": "arg_count", "type": "int", "default": 0, "max": 2},
 			{"name": "arg0", "type": "String", "default": "value"},
+			{"name": "arg0_type", "type": "enum", "options": ARGUMENT_TYPES, "default": "Variant"},
 			{"name": "arg1", "type": "String", "default": "amount"},
+			{"name": "arg1_type", "type": "enum", "options": ARGUMENT_TYPES, "default": "Variant"},
 		],
 	},
 
@@ -123,6 +127,8 @@ const NODES := {
 		"outputs": [{"name": "Then", "kind": "flow"}],
 		"params": [
 			{"name": "variable", "type": "String", "default": "my_value"},
+			{"name": "type", "type": "enum", "options": ARGUMENT_TYPES, "default": "Variant"},
+			{"name": "export", "type": "bool", "default": false},
 			{"name": "value", "type": "float", "default": 0.0},
 		],
 	},
@@ -139,7 +145,7 @@ const NODES := {
 		"params": [
 			{"name": "target", "type": "String", "default": "self"},
 			{"name": "method", "type": "String", "default": "print"},
-			{"name": "arg_count", "type": "int", "default": 0},
+			{"name": "arg_count", "type": "int", "default": 0, "max": 2},
 		],
 	},
 	"set_property": {
@@ -219,6 +225,53 @@ const NODES := {
 			{"name": "target", "type": "String", "default": "self"},
 			{"name": "signal_name", "type": "String", "default": "my_signal"},
 			{"name": "method", "type": "String", "default": "_on_my_signal"},
+		],
+	},
+	"dict_set": {
+		"title": "Dictionary Set",
+		"category": "Flow",
+		"desc": "Sets a key on a Dictionary variable.",
+		"inputs": [
+			{"name": "Then", "kind": "flow"},
+			{"name": "Key", "kind": "value"},
+			{"name": "Value", "kind": "value"},
+		],
+		"outputs": [{"name": "Then", "kind": "flow"}],
+		"params": [{"name": "variable", "type": "String", "default": "my_dict"}],
+	},
+	"wait_signal": {
+		"title": "Wait For Signal",
+		"category": "Flow",
+		"desc": "Suspends this chain until a signal fires.",
+		"inputs": [{"name": "Then", "kind": "flow"}],
+		"outputs": [{"name": "Then", "kind": "flow"}],
+		"params": [
+			{"name": "signal_name", "type": "String", "default": "my_signal"},
+			{"name": "target", "type": "String", "default": "self"},
+		],
+	},
+	"match_node": {
+		"title": "Match",
+		"category": "Flow",
+		"desc": "Runs the matching case chain, or Default. Case values are editable here or fed by ports.",
+		"inputs": [
+			{"name": "Then", "kind": "flow"},
+			{"name": "Value", "kind": "value"},
+			{"name": "Case 0", "kind": "value"},
+			{"name": "Case 1", "kind": "value"},
+			{"name": "Case 2", "kind": "value"},
+		],
+		"outputs": [
+			{"name": "Case 0", "kind": "flow"},
+			{"name": "Case 1", "kind": "flow"},
+			{"name": "Case 2", "kind": "flow"},
+			{"name": "Default", "kind": "flow"},
+		],
+		"params": [
+			{"name": "case_count", "type": "int", "default": 2, "max": 3},
+			{"name": "case0", "type": "float", "default": 0.0},
+			{"name": "case1", "type": "float", "default": 1.0},
+			{"name": "case2", "type": "float", "default": 2.0},
 		],
 	},
 	"while_loop": {
@@ -373,6 +426,32 @@ const NODES := {
 		"inputs": [{"name": "Array", "kind": "value"}, {"name": "Index", "kind": "value"}],
 		"outputs": [{"name": "Value", "kind": "value"}],
 		"params": [],
+	},
+	"dict_get": {
+		"title": "Dictionary Get",
+		"category": "Value",
+		"desc": "Reads a key from a dictionary.",
+		"inputs": [{"name": "Dictionary", "kind": "value"}, {"name": "Key", "kind": "value"}],
+		"outputs": [{"name": "Value", "kind": "value"}],
+		"params": [],
+	},
+	"dict_has": {
+		"title": "Dictionary Has",
+		"category": "Value",
+		"desc": "True when a dictionary contains a key.",
+		"inputs": [{"name": "Dictionary", "kind": "value"}, {"name": "Key", "kind": "value"}],
+		"outputs": [{"name": "Value", "kind": "value"}],
+		"params": [],
+	},
+	"convert": {
+		"title": "Convert",
+		"category": "Value",
+		"desc": "Converts a value to another type.",
+		"inputs": [{"name": "Value", "kind": "value"}],
+		"outputs": [{"name": "Value", "kind": "value"}],
+		"params": [
+			{"name": "to", "type": "enum", "options": ["String", "int", "float", "bool"], "default": "String"},
+		],
 	},
 	"get_delta": {
 		"title": "Delta",

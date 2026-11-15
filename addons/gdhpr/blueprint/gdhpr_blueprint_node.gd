@@ -11,6 +11,8 @@ signal edited
 var node_id: int = -1
 var type: String = "print"
 var graph: GDHPRBlueprintGraph = null
+## Called before a parameter is changed, so the editor can snapshot for undo.
+var edit_hook: Callable = Callable()
 
 var _building := false
 
@@ -159,6 +161,8 @@ func _make_editor(param: Dictionary, current: Variant) -> Control:
 func _set_prop(key: String, value: Variant) -> void:
 	if _building or graph == null:
 		return
+	if edit_hook.is_valid():
+		edit_hook.call()
 	graph.set_prop(node_id, key, value)
 	edited.emit()
 
